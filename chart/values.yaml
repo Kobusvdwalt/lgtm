@@ -1,0 +1,3 @@
+storage_class: example-storage-class
+host_grafana: grafana.example.com
+host_prometheus: prometheus.example.com

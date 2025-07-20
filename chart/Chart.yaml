@@ -1,0 +1,4 @@
+apiVersion: v2
+name: lgtm
+description: Helm chart for lgtm (currently Loki & Grafana) deployment
+version: 0.0.1

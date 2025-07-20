@@ -1,0 +1,184 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.storage_class }}
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: lgtm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: web
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+      annotations:
+        prometheus-config: |
+          global:
+            scrape_interval: 15s
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+
+            - job_name: 'kube-state-metrics'
+              static_configs:
+                - targets: ['kube-state-metrics.lgtm.svc.cluster.local:8080']
+
+            - job_name: 'node-exporter'
+              kubernetes_sd_configs:
+                - role: endpoints
+                  namespaces:
+                    names:
+                      - lgtm
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_service_label_app]
+                  action: keep
+                  regex: node-exporter
+                - source_labels: [__meta_kubernetes_endpoint_port_name]
+                  action: keep
+                  regex: metrics
+
+            - job_name: 'kubelet'
+              scheme: https
+              tls_config:
+                ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                insecure_skip_verify: true
+              bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              kubernetes_sd_configs:
+                - role: node
+              relabel_configs:
+                - action: labelmap
+                  regex: __meta_kubernetes_node_label_(.+)
+                - target_label: __address__
+                  replacement: kubernetes.default.svc:443
+                - source_labels: [__meta_kubernetes_node_name]
+                  regex: (.+)
+                  target_label: __metrics_path__
+                  replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+            - job_name: 'kubelet-volume'
+              scheme: https
+              tls_config:
+                ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                insecure_skip_verify: true
+              bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              kubernetes_sd_configs:
+                - role: node
+              relabel_configs:
+                - action: labelmap
+                  regex: __meta_kubernetes_node_label_(.+)
+                - target_label: __address__
+                  replacement: kubernetes.default.svc:443
+                - source_labels: [__meta_kubernetes_node_name]
+                  regex: (.+)
+                  target_label: __metrics_path__
+                  replacement: /api/v1/nodes/${1}/proxy/metrics/resource
+
+            - job_name: 'argocd-application-controller'
+              static_configs:
+                - targets: ['argocd-metrics.argocd.svc.cluster.local:8082']
+
+            - job_name: 'argocd-api-server'
+              static_configs:
+                - targets: ['argocd-server-metrics.argocd.svc.cluster.local:8083']
+
+            - job_name: 'nginx-metrics'
+              static_configs:
+                - targets: ['nginx-ingress-ingress-nginx-controller-metrics.nginx-ingress.svc.cluster.local:10254']
+
+            - job_name: 'postgres-metrics'
+              static_configs:
+                - targets: ['postgres.service.svc.cluster.local:9187']
+
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        fsGroup: 65534
+      volumes:
+        - name: prometheus-config
+          downwardAPI:
+            items:
+              - path: prometheus.yml
+                fieldRef:
+                  fieldPath: metadata.annotations['prometheus-config']
+        - name: storage
+          persistentVolumeClaim:
+            claimName: prometheus-pvc
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.52.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--web.enable-remote-write-receiver"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=2d"
+          resources:
+            limits:
+              memory: 512Mi
+              cpu: 100m
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+            - name: storage
+              mountPath: /prometheus
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  tls:
+    - hosts:
+        - {{ .Values.host_prometheus }}
+      secretName: prometheus-ingress-certificate
+  rules:
+    - host: {{ .Values.host_prometheus }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: 9090
