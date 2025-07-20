@@ -1,4 +1,7 @@
-# LGTM Monitoring Stack
+<div align="center">
+<img src="./docs/logo.png" width="300px"/><br/>
+<h1>LGTM Monitoring Stack</h1>
+</div>
 
 A simple example deployment of the LGTM monitoring stack (Loki, Grafana, Tempo, Metrics) using Helm charts and Kubernetes manifests.
 
